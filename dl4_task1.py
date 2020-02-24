@@ -5,12 +5,15 @@ import tarfile
 from torch.utils.data import Dataset
 import os
 from torchvision import transforms
-import matplotlib as pyplot
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+import torchvision.models as models
 
-labels = "ILSVRC2012_bbox_val_v3.tgz"
-images = "imagenet2500.tar"
-image_folder = "imagespart"
-label_folder = "val"
+root_dir = "/content/drive/"
+labels = os.path.join(root_dir,"ILSVRC2012_bbox_val_v3.tgz")
+images = os.path.join(root_dir,"imagenet2500.tar")
+image_folder = os.path.join(root_dir,"imagespart")
+label_folder = os.path.join(root_dir,"val")
 def open_tar(fname):
     try:
         if fname.endswith("tgz"):
@@ -40,7 +43,6 @@ class DataLoader(Dataset):
         image.resize(resized)
         return image
 
-
     #getitem to load image? Then how about labels?
     def __getitem__(self, idx):
         label = self.labels[idx]
@@ -54,10 +56,22 @@ class DataLoader(Dataset):
 
         return sample
 
-#comment out after run
-if not os.path.isdir(image_folder):
-    open_tar(images)
-if not os.path.isdir(label_folder):
-    open_tar(labels)
-sample = DataLoader(image_folder,label_folder)
+def test_image(image):
+    img = mpimg.imread(image)
+    imgplot = plt.imshow(img)
+    plt.show()
 
+def test():
+    resnet = models.resnet18(pretrained=True)
+
+#comment out after run
+def main():
+    if not os.path.isdir(os.path.join(root_dir,image_folder)):
+        open_tar(images)
+    if not os.path.isdir(os.path.join(root_dir,label_folder)):
+        open_tar(labels)
+    sample = DataLoader(image_folder,label_folder)
+
+
+if __name__=="__main__":
+    main()
