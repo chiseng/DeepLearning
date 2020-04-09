@@ -72,20 +72,25 @@ def train_lstm(
     hidden, cell = model.initHidden(batch_size)
     model.train()
     model.zero_grad()
+    total_loss = []
     hidden, cell = hidden.to(device), cell.to(device)
-    output, (hidden, cell) = model(line_tensor, (hidden, cell))
+    for i in range(line_tensor.size(0)):
+        output, (hidden, cell) = model(line_tensor[i], (hidden, cell))
+        loss = criterion(output, target_tensor[i])
+        total_loss.append(loss.item())
+
     # print("out:", output.shape, "out squeeze: ", output.squeeze(1).shape, "category:", target_tensor.shape, "hidden:", hidden.shape, "cell state:", cell.shape)
-    loss = criterion(output.squeeze(1), target_tensor)
     loss.backward()
     optimizer.step()
 
-    return output, loss.item()
+    return output, np.mean(total_loss)
 
 
 def train_phase(trainloader, device, model, criterion, optimizer):
     train_loss = []
     for iter, data in enumerate(tqdm.tqdm(trainloader)):
         line_tensor, target_tensor = data[0].to(device), data[1].to(device)
+
         output, loss = train_lstm(
             criterion,
             model,
@@ -100,17 +105,19 @@ def train_phase(trainloader, device, model, criterion, optimizer):
 
 
 def eval_model(
-    model, device, criterion, batch_size, target_tensor :torch.Tensor, line_tensor
+    model, device, criterion, batch_size, target_tensor :torch.Tensor, line_tensor:torch.Tensor
 ):
     model.eval()
     hidden, cell = model.initHidden(batch_size)
     hidden = hidden.to(device)
     cell = cell.to(device)
     with torch.no_grad():
-        output, (hidden, cell) = model(line_tensor, (hidden, cell))
+        for i in range(line_tensor.size(0)):
+            output, (hidden, cell) = model(line_tensor[i].unsqueeze(1), (hidden, cell))
+            print(f"output {output.squeeze(0).shape}, target_tensor {target_tensor[i].shape}")
+            loss = criterion(output.squeeze(0), target_tensor[i])
     # print(output.shape)
     # print(target_tensor.shape)
-    loss = criterion(output.squeeze(-1), target_tensor)
 
     return output, loss.item()
 
@@ -120,6 +127,7 @@ def eval_phase(dataloader, device, model, criterion):
     best_loss = 1000
     for iter, data in enumerate(dataloader):
         line_tensor, target_tensor = data[0].to(device), data[1].to(device)
+
         output, loss = eval_model(
             model,
             device,
@@ -138,7 +146,8 @@ def test_phase(util_class, dataloader, device, model, criterion):
     test_loss = []
     total = 0
     for iter, data in enumerate(dataloader):
-        line_tensor, target_tensor = data[0].to(device), data[1].to(device)
+        line_tensor,  target_tensor = data[0].to(device), data[1].to(device)
+        print(f"Line tensor shape {line_tensor.shape}, target tensor shape {target_tensor.shape}")
         total += data[0].shape[1]
         output, loss = eval_model(
             model,
@@ -148,10 +157,6 @@ def test_phase(util_class, dataloader, device, model, criterion):
             target_tensor,
             line_tensor,
         )
-        category = util_class.batch_categoryFromOutput(output)
-        batch_correct = (torch.tensor(category) == target_tensor.cpu()).sum()
-        correct += batch_correct
-        test_loss.append(loss)
     acc = correct / float(total)
     return np.mean(test_loss), acc.data
 
@@ -171,6 +176,9 @@ def train_predict(util_class, model, device, dataset, batch_size, epochs):
 
     print("Train set: ", len(name_lang_dataset_train))
     print("Test set: ", len(name_lang_dataset_test))
+
+    print("Target tensor size:",name_lang_dataset_test[1][2].shape)
+    print("Input tensor size:",name_lang_dataset_test[1][1].shape)
     for step in range(epochs):
         print("\n")
         print("Epoch %i" % step)

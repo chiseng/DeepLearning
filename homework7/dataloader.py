@@ -50,7 +50,6 @@ class nameLanguageDataset(Dataset):
         if self.dataset_type == "train":
             line = self.train[idx]
             sample = (line, self.utils.inputTensor(line), self.utils.targetTensor(line))
-            print(sample)
             return sample
 
         elif self.dataset_type == "val":
@@ -100,9 +99,7 @@ class iteratefromDict:
         else:
             if len(self.dataset) - self.count < self.batch_size:
                 self.batch_size = len(self.dataset) - self.count
-            input = [
-                self.dataset[self.count + i][1] for i in range(0, self.batch_size)
-            ]
+            input = [self.dataset[self.count + i][1] for i in range(0, self.batch_size)]
             target = [
                 self.dataset[self.count + i][2] for i in range(0, self.batch_size)
             ]
@@ -110,6 +107,6 @@ class iteratefromDict:
             self.count += self.batch_size
 
             mini_batch_input = pad_sequence(input, padding_value=0).squeeze(2)
-            mini_batch_target = pad_sequence(input, padding_value=0)
+            mini_batch_target = pad_sequence(target, padding_value=0)
 
             return mini_batch_input, mini_batch_target
