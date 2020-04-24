@@ -1,32 +1,39 @@
 import json
+import os
+import string
 from pathlib import Path
 from typing import Tuple, List, Dict, Iterable
 
 import numpy as np
 import pandas as pd
 import sentence_transformers
-import torch.utils.data
+import torch
 import torchmeta
 import torchvision
 from sklearn import metrics, linear_model
+from torch.utils.data import Dataset
 from torchvision.datasets.utils import download_url, extract_archive
+from tqdm import tqdm
 
-import utils
+from utils import get_device, shuffle_multi_split, HyperParams
 
 
-class SentenceBERT(sentence_transformers.SentenceTransformer):
+class SentenceBERT(
+    sentence_transformers.SentenceTransformer
+):  # get models and word embeddings
     def __init__(self, cache_dir="cache"):
         self.cache_dir = Path(cache_dir)
         self.dir_model = self.download()
-        self.size_embed = 768
-        super().__init__(str(self.dir_model), device=utils.get_device())
+        self.embed_size = 768
+        super().__init__(str(self.dir_model), device=get_device())
 
     def download(self):
         url = "https://github.com/chiayewken/sutd-materials/releases/download/v0.1.0/bert-base-nli-mean-tokens.zip"
         path_zip = self.cache_dir / Path(url).name
+        dir_model = self.cache_dir / "bert"
+
         if not path_zip.exists():
             download_url(url, self.cache_dir, filename=path_zip.name)
-        dir_model = self.cache_dir / "bert"
         if not dir_model.exists():
             extract_archive(str(path_zip), str(dir_model))
         return dir_model
@@ -41,42 +48,37 @@ class SentenceBERT(sentence_transformers.SentenceTransformer):
         if not path_cache.exists():
             np.save(str(path_cache), get_embeds())
         embeds = np.load(str(path_cache))
-        assert embeds.shape == (len(texts), self.size_embed)
+        assert embeds.shape == (len(texts), self.embed_size)
         return embeds
 
 
-class Splits:
+class Splits:  # gets the train test splits
     train = "train"
     val = "val"
     test = "test"
 
+    @classmethod
+    def check(cls, data_split: str) -> bool:
+        return data_split in {cls.train, cls.val, cls.test}
 
-class DataParams:
-    """Hyperparameters for meta learning data"""
+    @classmethod
+    def apply(cls, items, data_split: str, fractions=(0.8, 0.1, 0.1)):
+        assert len(fractions) == 3
+        assert cls.check(data_split)
+        indices_split = shuffle_multi_split(items, fractions)
+        splits = [Splits.train, Splits.val, Splits.test]
+        return indices_split[splits.index(data_split)]
 
-    def __init__(
-        self,
-        root="temp",
-        data_split=Splits.train,
-        bs=10,
-        num_ways=5,
-        num_shots=5,
-        num_shots_test=5,
-    ):
-        self.root = root
+
+class OmniglotMetaLoader(
+    torchmeta.utils.data.BatchMetaDataLoader
+):  # gets the omniglot dataset of images, converts them to tensors and splits it into train test val
+    def __init__(self, hparams: HyperParams, data_split: str):
+        assert Splits.check(data_split)
         self.data_split = data_split
-        self.bs = bs
-        self.num_ways = num_ways
-        self.num_shots = num_shots
-        self.num_shots_test = num_shots_test
-        print(vars(self))
-
-
-class OmniglotMetaLoader(torchmeta.utils.data.BatchMetaDataLoader):
-    def __init__(self, params: DataParams):
-        self.params = params
+        self.params = hparams
         self.dataset, self.split_dataset = self.get_dataset()
-        super().__init__(self.split_dataset, params.bs, num_workers=2)
+        super().__init__(self.split_dataset, hparams.bs_outer, num_workers=0)
         self.plot_sample()
 
     def get_dataset(self, image_size=28):
@@ -95,7 +97,7 @@ class OmniglotMetaLoader(torchmeta.utils.data.BatchMetaDataLoader):
             ),
             # Creates new augmented classes  (from Santoro et al., 2016)
             class_augmentations=[torchmeta.transforms.Rotation([90, 180, 270])],
-            meta_split=self.params.data_split,
+            meta_split=self.data_split,
             download=True,
         )
         split_dataset = torchmeta.transforms.ClassSplitter(
@@ -112,13 +114,15 @@ class OmniglotMetaLoader(torchmeta.utils.data.BatchMetaDataLoader):
             images = tasks_train[0][0]
             name = self.__class__.__name__
             root = Path(self.params.root)
-            fp = str(root / f"{name}_{self.params.data_split}_sample.png")
+            fp = str(root / f"{name}_{self.data_split}_sample.png")
             torchvision.utils.save_image(images, fp, nrow=self.params.num_ways)
             print(fp)
             break
 
 
 class SingleLabelDataset(torchmeta.utils.data.Dataset):
+    """Helper class for meta-learning, consists of samples from only one label"""
+
     def __init__(self, index, data, label, transform=None, target_transform=None):
         super().__init__(index, transform=transform, target_transform=target_transform)
         self.data = data
@@ -138,7 +142,92 @@ class SingleLabelDataset(torchmeta.utils.data.Dataset):
         return x, y
 
 
-class IntentDataset(torch.utils.data.Dataset):
+class ClassDataset(torchmeta.utils.data.ClassDataset):
+    """Helper class for meta-learning, each data "sample" is a SingleLabelDataset"""
+
+    def __init__(self, dataset: Dataset, meta_split: str, transform=None):
+        super().__init__(meta_split=meta_split)
+        self.transform = transform
+        self.full_dataset = dataset
+        self.datasets = self.split_datasets()
+
+    def split_datasets(self) -> List[SingleLabelDataset]:
+        label2data = {}
+        for i in range(len(self.full_dataset)):
+            x, y = self.full_dataset[i]
+            if y not in label2data.keys():
+                label2data[y] = []
+            label2data[y].append(x)
+
+        labels_keep = Splits.apply(sorted(label2data.keys()), self.meta_split)
+        datasets = []
+        for j, (label, data) in enumerate(label2data.items()):
+            if label not in labels_keep:
+                continue
+            datasets.append(SingleLabelDataset(j, data, label, self.transform))
+        return datasets
+
+    @property
+    def num_classes(self) -> int:
+        return len(self.datasets)
+
+    def __getitem__(self, i: int):
+        return self.datasets[i]
+
+
+class MetaLoader(torchmeta.utils.data.BatchMetaDataLoader):
+    """Data loader class for meta-learning, samples batches of episodes/tasks"""
+
+    def __init__(
+        self, dataset: Dataset, data_split: str, hparams: HyperParams, transform=None
+    ):
+        assert Splits.check(data_split)
+        self.transform = transform
+        self.ds_orig = dataset
+        self.ds_class = ClassDataset(self.ds_orig, data_split, transform)
+        self.ds_meta = torchmeta.utils.data.CombinationMetaDataset(
+            dataset=self.ds_class,
+            num_classes_per_task=hparams.num_ways,
+            target_transform=torchmeta.transforms.Categorical(hparams.num_ways),
+        )
+        self.ds_split = torchmeta.transforms.ClassSplitter(
+            self.ds_meta,
+            shuffle=(data_split == Splits.train),
+            num_train_per_class=hparams.num_shots,
+            num_test_per_class=hparams.num_shots_test,
+        )
+        super().__init__(
+            dataset=self.ds_split,
+            batch_size=hparams.bs_outer,
+            shuffle=(data_split == Splits.train),
+            num_workers=0,
+        )
+
+
+class MetaBatch:
+    """Convenience class to process batches of episodes/tasks"""
+
+    def __init__(
+        self,
+        raw_batch: Dict[str, Tuple[torch.Tensor, torch.Tensor]],
+        device: torch.device,
+    ):
+        self.device = device
+        self.x_train, self.y_train = self.to_device(raw_batch["train"])
+        self.x_test, self.y_test = self.to_device(raw_batch["test"])
+
+    def get_tasks(self,) -> List[List[torch.Tensor]]:
+        batch_size = self.x_train.shape[0]
+        tensors = [self.x_train, self.y_train, self.x_test, self.y_test]
+        return [[t[i] for t in tensors] for i in range(batch_size)]
+
+    def to_device(self, tensors: Iterable[torch.Tensor]) -> List[torch.Tensor]:
+        return [t.to(self.device) for t in tensors]
+
+
+class IntentDataset(Dataset):
+    """Intent text classification"""
+
     def __init__(self, root: str, remove_oos_orig=True):
         self.remove_oos_orig = remove_oos_orig
         self.root = Path(root)
@@ -165,7 +254,7 @@ class IntentDataset(torch.utils.data.Dataset):
         df = self.data_orig.copy()
         if self.remove_oos_orig:
             mask_oos = df["split"].apply(lambda x: "oos" in x)
-            df_oos = df[mask_oos]
+            # df_oos = df[mask_oos]
             df = df[~mask_oos]
         texts = df["text"].tolist()
         labels = df["label"].tolist()
@@ -179,114 +268,153 @@ class IntentDataset(torch.utils.data.Dataset):
         return len(self.texts)
 
 
-class IntentClassDataset(torchmeta.utils.data.ClassDataset):
-    def __init__(self, orig_dataset: IntentDataset, meta_split: str, transform=None):
-        super().__init__(meta_split=meta_split)
-        self.orig_dataset = orig_dataset
-        self.transform = transform
-        self.label2texts = self.process_data()
-        self.labels = sorted(self.label2texts.keys())
+class IntentEmbedBertDataset(IntentDataset):
+    """Use pre-trained BERT language model to obtain sentence embeddings as pre-processing"""
 
-    def process_data(self) -> Dict[str, List[str]]:
-        unique_labels = sorted(set(self.orig_dataset.labels))
-        splits = {Splits.train: 0.8, Splits.val: 0.1, Splits.test: 0.1}
-        labels_split = utils.shuffle_multi_split(
-            items=unique_labels, fractions=list(splits.values())
-        )
-        i_split = list(splits.keys()).index(self.meta_split)
-        labels = labels_split[i_split]
-        label2texts = {label: [] for label in labels}
-        for i in range(len(self.orig_dataset)):
-            text, label = self.orig_dataset[i]
-            if label in label2texts.keys():
-                label2texts[label].append(text)
-        return label2texts
-
-    def __getitem__(self, i) -> SingleLabelDataset:
-        label = self.labels[i]
-        return SingleLabelDataset(
-            index=i,
-            data=self.label2texts[label],
-            label=label,
-            transform=self.get_transform(i, self.transform),
-            target_transform=self.get_target_transform(i),
-        )
-
-    @property
-    def num_classes(self) -> int:
-        return len(self.labels)
-
-
-class IntentMetaLoader(torchmeta.utils.data.BatchMetaDataLoader):
-    def __init__(self, params: DataParams, try_embeds=False):
-        self.params = params
-        self.orig_dataset = IntentDataset(self.params.root)
+    def __init__(self, root: str, remove_oos_orig=True, try_embeds=False):
+        super().__init__(root, remove_oos_orig)
         self.embedder = SentenceBERT()
-        self.transform = self.get_transform(self.orig_dataset)
-        self.class_dataset, self.meta_dataset, self.split_dataset = self.get_datasets()
-        super().__init__(
-            dataset=self.split_dataset,
-            batch_size=params.bs,
-            shuffle=(self.params.data_split == Splits.train),
-            num_workers=2,
-        )
+        self.embeds = self.embedder.embed_texts(self.texts)
         if try_embeds:
             self.try_embeds_fit_simple_classifier()
 
-    def get_transform(self, dataset: IntentDataset):
-        texts = dataset.texts
-        embeds = self.embedder.embed_texts(texts)
-        text2embed = {texts[i]: embeds[i] for i in range(len(texts))}
-        return lambda x: text2embed[x]
-
-    def get_datasets(self):
-        class_dataset = IntentClassDataset(
-            self.orig_dataset, self.params.data_split, transform=self.transform
-        )
-        meta_dataset = torchmeta.utils.data.CombinationMetaDataset(
-            dataset=class_dataset,
-            num_classes_per_task=self.params.num_ways,
-            target_transform=torchmeta.transforms.Categorical(self.params.num_ways),
-        )
-        split_dataset = torchmeta.transforms.ClassSplitter(
-            meta_dataset,
-            shuffle=(self.params.data_split == Splits.train),
-            num_train_per_class=self.params.num_shots,
-            num_test_per_class=self.params.num_shots_test,
-        )
-        return class_dataset, meta_dataset, split_dataset
+    def __getitem__(self, i: int) -> Tuple[np.ndarray, str]:
+        return self.embeds[i], self.labels[i]
 
     def try_embeds_fit_simple_classifier(self):
-        embeds = np.stack([self.transform(text) for text in self.orig_dataset.texts])
-        labels = np.array(self.orig_dataset.labels)
-        train, val, test = utils.shuffle_multi_split(list(range(len(embeds))))
+        def get_xy(data_split: str):
+            indices = Splits.apply(list(range(len(self))), data_split)
+            x = self.embeds
+            y = np.array(self.labels)
+            return x[indices], y[indices]
+
+        x_train, y_train = get_xy(Splits.train)
+        x_val, y_val = get_xy(Splits.val)
         model = linear_model.RidgeClassifier()
-        model.fit(embeds[train], labels[train])
-        print(metrics.classification_report(labels[val], model.predict(embeds[val])))
+        model.fit(x_train, y_train)
+        print(metrics.classification_report(y_val, model.predict(x_val)))
 
 
-class MetaBatch:
+class IntentEmbedGloveDataset(IntentDataset):
     def __init__(
-        self,
-        raw_batch: Dict[str, Tuple[torch.Tensor, torch.Tensor]],
-        device=torch.device("cpu"),
+        self, root: str, remove_oos_orig=True, cache_dir="embed_cache"
     ):
-        self.device = device
-        self.x_train, self.y_train = self.to_device(raw_batch["train"])
-        self.x_test, self.y_test = self.to_device(raw_batch["test"])
+        super().__init__(root, remove_oos_orig)
+        self.url = "https://github.com/chiseng/DeepLearning/releases/download/1.0/numberbatch-en-19.08.txt.gz"
+        self.cache_dir = Path(cache_dir)
+        self.path = self.cache_dir / Path(self.url).name.strip(".gz")
+        self.preprocessing()
+        self.punctuation_table = str.maketrans("", "", string.punctuation)
+        sentence_length = np.unique(
+            [len(sentence.strip().split()) for sentence in self.texts]
+        )
+        self.pad_to = sentence_length[int(0.95 * len(sentence_length))]
 
-    def get_tasks(self,) -> List[List[torch.Tensor]]:
-        batch_size = self.x_train.shape[0]
-        tensors = [self.x_train, self.y_train, self.x_test, self.y_test]
-        return [[t[i] for t in tensors] for i in range(batch_size)]
+    # find word in list of embedded vectors
+    def preprocessing(self):
 
-    def to_device(self, tensors: Iterable[torch.Tensor]) -> List[torch.Tensor]:
-        return [t.to(self.device) for t in tensors]
+        dir_embeddings = self.cache_dir / "GloVE"
+        if not self.path.exists():
+            download_url(self.url, self.cache_dir, filename="conceptnet.gz")
+        if not dir_embeddings.exists():
+            extract_archive(str(self.path), str(dir_embeddings))
+
+        self.path = dir_embeddings / "numberbatch-en.txt"
+        f = open(self.path, "r", encoding="utf8")
+        metrics = f.readline().strip().split()
+        self.num_words = int(metrics[0])
+        self.vector_length = int(metrics[1])
+        self.word_vector = {}
+
+        for idx, line in enumerate(f):
+            parsed_line = line.strip().split()
+            self.word_vector[parsed_line[0]] = np.asarray(
+                list(map(np.float, parsed_line[1:])), dtype=np.float64
+            )
+        f.close()
+
+        f = open(self.path, "r", encoding="utf8")
+        f.readline()
+        self.vocab = [line.strip().split()[0] for line in f]
+        f.close()
+
+    # get the index from the list and get the corresponding vector from the file.
+    def __getitem__(self, ind):
+        sentence: str = self.texts[ind]
+        sentence: list = [
+            word.translate(self.punctuation_table) for word in sentence.strip().split()
+        ]
+        if len(sentence) > self.pad_to:
+            sentence = sentence[:self.pad_to]
+        self.sentence_vector = np.zeros((self.pad_to, self.vector_length))
+        for idx, word in enumerate(sentence):
+            try:
+                self.sentence_vector[idx] = self.word_vector[word]
+            except KeyError:
+                try:
+                    if "pm" in word or "am" in word:
+                        word = "time"
+                    elif str.isdigit(word):
+                        word = "number"
+                    else:
+                        self.sentence_vector[idx] = self.word_vector[word[:-1]]
+                except KeyError:
+                    word = "unknown"
+                    self.sentence_vector[idx] = self.word_vector[word]
+        return self.sentence_vector, self.labels[ind] # (26,300), string
+
+
+
+
+class IntentEmbedBertMetaLoader(MetaLoader):
+    def __init__(self, hparams: HyperParams, data_split: str):
+        dataset = IntentEmbedBertDataset(root=hparams.root)
+        self.embed_size = dataset.embedder.embed_size
+        super().__init__(dataset, data_split, hparams)
+
+
+class IntentEmbedGloveMetaLoader(MetaLoader):
+    def __init__(self, hparams: HyperParams, data_split: str):
+        dataset = IntentEmbedGloveDataset(root=hparams.root)
+        self.embed_size = dataset.vector_length
+        super().__init__(dataset, data_split, hparams)
+
 
 
 def main():
-    IntentMetaLoader(DataParams())
-    OmniglotMetaLoader(DataParams())
+    # OmniglotMetaLoader(HyperParams(), data_split=Splits.train)
+    # glove_loader = IntentEmbedGloveDataset(root=HyperParams().root)
+    # bertloader = IntentEmbedBertDataset(root=HyperParams().root)
+    # print(glove_loader[0])
+    # print(bertloader[0])
+    # glove_data = IntentEmbedGloveDataset(root=HyperParams().root)
+
+
+    # print(Splits.train)
+    glove_loader = IntentEmbedGloveMetaLoader(HyperParams(), data_split=Splits.train)
+    # loaders = {s: IntentEmbedGloveMetaLoader(HyperParams(), s) for s in ["train", "val"]}
+    # print(next(iter(glove_loader)))
+
+
+    # self.chunk_dir: Path = Path("vector_chunks")
+    # if not self.chunk_dir.exists():
+    #     self.chunk_dir.mkdir()
+    #     files = [
+    #         open(
+    #             os.path.join(str(self.chunk_dir), f"chunk_{i}.txt"),
+    #             "w",
+    #             encoding="utf-8",
+    #         )
+    #         for i in range(1, 15)
+    #     ]
+    #     count = 1
+    #     for idx, line in enumerate(f):
+    #         if (idx % (count * self.num_words / 14)) == 0 and idx != 0:
+    #             count += 1
+    #         files[count - 1].write(line)
+    #     for file in files:
+    #         file.close()
+    # f.close()
 
 
 if __name__ == "__main__":

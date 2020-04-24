@@ -1,14 +1,27 @@
-import copy
-from typing import Dict
+from copy import deepcopy
+from typing import Dict, List, Tuple
 
 import torch
-import torch.utils.data
 import torchmeta
-import tqdm
+from torch.utils.data import DataLoader, TensorDataset
 
-import datasets
-import models
-import utils
+from datasets import (
+    OmniglotMetaLoader,
+    IntentEmbedBertMetaLoader,
+    Splits,
+    MetaBatch,
+    IntentEmbedGloveMetaLoader,
+)
+from models import ConvClassifier, LinearClassifier, LSTMClassifier
+from utils import (
+    MathDict,
+    LinearDecayLR,
+    MetricsTracker,
+    get_device,
+    set_random_state,
+    HyperParams,
+    generate,
+)
 
 
 class ReptileSGD:
@@ -18,23 +31,25 @@ class ReptileSGD:
     The model weights are using SGD in "step"
     """
 
-    def __init__(self, net: torch.nn.Module, lr_schedule, num_accum):
+    def __init__(
+        self, net: torch.nn.Module, lr_schedule: LinearDecayLR, num_accum: int
+    ):
         self.net = net
         self.num_accum = num_accum
-        self.lr_schedule: utils.LinearDecayLR = lr_schedule
+        self.lr_schedule = lr_schedule
 
-        self.grads = utils.MathDict()
-        self.weights_before = utils.MathDict()
+        self.grads = MathDict()
+        self.weights_before = MathDict()
         self.counter = 0
         self.zero_grad()
 
     def zero_grad(self):
-        self.grads = utils.MathDict()
-        self.weights_before = utils.MathDict(self.net.state_dict())
+        self.grads = MathDict()
+        self.weights_before = MathDict(self.net.state_dict())
         self.counter = 0
 
-    def get_gradients(self):
-        weights_after = utils.MathDict(self.net.state_dict())
+    def get_gradients(self) -> MathDict:
+        weights_after = MathDict(self.net.state_dict())
         return self.weights_before - weights_after
 
     def store_grad(self):
@@ -46,21 +61,12 @@ class ReptileSGD:
             self.grads = self.grads + g
         self.counter += 1
 
-    def step(self, i_step):
+    def step(self, i_step: int):
         assert self.counter == self.num_accum
         grads_avg = self.grads / self.num_accum
         lr = self.lr_schedule.get_lr(i_step)
         weights_new = self.weights_before - (grads_avg * lr)
         self.net.load_state_dict(weights_new.state)
-
-
-class LoopParams:
-    """Hyperparameters for meta learning loops"""
-
-    def __init__(self, lr, steps, bs):
-        self.bs = bs
-        self.steps = steps
-        self.lr = lr
 
 
 class ReptileSystem:
@@ -71,158 +77,152 @@ class ReptileSystem:
     System to take in meta-learning data and any kind of model
     and run Reptile meta-learning training loop
     The objective of meta-learning is not to master any single task
-    but instead to obtain a system that can quickly adapt to a new task
-    using a small number of training steps and data, like a human
+    but instead to obtain x1 system that can quickly adapt to x1 new task
+    using x1 small number of training steps and data, like x1 human
 
     Reptile pseudo-code:
     Initialize initial weights, w
     For iterations:
-        Randomly sample a task T
+        Randomly sample x1 task T
         Perform k steps of SGD on T, now having weights, w_after
         Update w = w - learn_rate * (w - w_after)
     """
 
     def __init__(
         self,
+        hparams: HyperParams,
         loaders: Dict[str, torchmeta.utils.data.BatchMetaDataLoader],
         net: torch.nn.Module,
-        inner: LoopParams,
-        outer: LoopParams,
-        val: LoopParams,
+        # hidden_state = None,
     ):
-        super().__init__()
+        self.hparams = hparams
         self.loaders = loaders
-        self.inner = inner
-        self.outer = outer
-        self.val = val
 
-        self.device = utils.get_device()
-        self.rng = utils.set_random_state()
+        self.device = get_device()
+        self.rng = set_random_state()
         self.net = net.to(self.device)
         self.criterion = torch.nn.CrossEntropyLoss()
-        self.opt_inner = torch.optim.SGD(self.net.parameters(), lr=self.inner.lr)
-        lr_schedule = utils.LinearDecayLR(self.outer.lr, self.outer.steps)
-        self.opt_outer = ReptileSGD(self.net, lr_schedule, num_accum=self.outer.bs)
-
-        self.batch_val = next(iter(self.loaders[datasets.Splits.val]))
-
-    def run_batch(self, batch, do_train=True):
-        if do_train:
+        self.opt_inner = torch.optim.SGD(self.net.parameters(), lr=hparams.lr_inner)
+        lr_schedule = LinearDecayLR(hparams.lr_outer, hparams.steps_outer)
+        self.opt_outer = ReptileSGD(self.net, lr_schedule, num_accum=hparams.bs_outer)
+        self.batch_val = next(iter(self.loaders[Splits.train]))
+        # self.hidden = (hidden_state[0].to(self.device), hidden_state[1].to(self.device))
+        # self.hidden = hidden_state
+    def get_gradient_context(self, is_train: bool) -> torch.autograd.grad_mode:
+        if is_train:
             self.net.train()
-            context_grad = torch.enable_grad
+            return torch.enable_grad
         else:
             self.net.eval()
-            context_grad = torch.no_grad
+            return torch.no_grad
 
-        with context_grad():
+    @staticmethod
+    def get_accuracy(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        preds: torch.Tensor
+        if logits.shape[-1] == 1:
+            preds = logits.sigmoid().round()
+        else:
+            preds = torch.argmax(logits, dim=-1)
+        return (preds == targets).float().mean()
+
+    def run_batch(
+        self, batch: Tuple[torch.Tensor, torch.LongTensor], is_train=True
+    ) -> Dict[str, float]: # inner batch size 10
+        with self.get_gradient_context(is_train)():
             inputs, targets = batch
-            if do_train:
+            if is_train:
                 self.opt_inner.zero_grad()
-            outputs = self.net(inputs)
+            outputs = self.net(inputs) #, self.hidden)
             loss = self.criterion(outputs, targets)
-            acc = utils.acc_score(outputs, targets)
-            if do_train:
+            acc = self.get_accuracy(outputs, targets)
+            if is_train:
                 loss.backward()
                 self.opt_inner.step()
         return dict(loss=loss.item(), acc=acc.item())
 
-    def loop_inner(self, task, bs, steps):
+
+    def loop_inner(
+        self, task: List[torch.Tensor], bs: int, steps: int,
+    ) -> Dict[str, float]:
         x_train, y_train, x_test, y_test = task
-        ds = torch.utils.data.TensorDataset(x_train, y_train)
-        loader = torch.utils.data.DataLoader(ds, bs, shuffle=True)
+        ds = TensorDataset(x_train, y_train)
+        loader = DataLoader(ds, bs, shuffle=True)
 
-        counter = 0
-        while counter < steps:
-            for batch in loader:
-                self.run_batch(batch, do_train=True)
-                counter += 1
-
-        metrics = self.run_batch((x_test, y_test), do_train=False)
-        return metrics
-
-    def load_meta_tasks(self, batch):
-        meta_x_train, meta_y_train = batch["train"]
-        meta_x_test, meta_y_test = batch["test"]
-        tensors = [meta_x_train, meta_y_train, meta_x_test, meta_y_test]
-        tensors = [t.to(self.device) for t in tensors]
-        return [[t[i] for t in tensors] for i in range(self.outer.bs)]
+        for batch in generate(loader, limit=steps):
+            self.run_batch(batch, is_train=True)
+        return self.run_batch((x_test, y_test), is_train=False)
 
     def loop_outer(self):
-        steps = self.outer.steps
-        interval = steps // 100
-        loader = self.loaders[datasets.Splits.train]
-        tracker = utils.MetricsTracker(prefix=datasets.Splits.train)
+        steps = self.hparams.steps_outer
+        interval = steps // 10
+        loader = self.loaders[Splits.train]
+        tracker = MetricsTracker(prefix=Splits.train)
 
-        with tqdm.tqdm(loader, total=self.outer.steps) as pbar:
-            for i, batch in enumerate(pbar):
-                if i > steps:
-                    break
+        for i, batch in enumerate(generate(loader, limit=steps, show_progress=True)):
+            self.opt_outer.zero_grad()
+            for task in MetaBatch(batch, self.device).get_tasks():
+                metrics = self.loop_inner(
+                    task, self.hparams.bs_inner, self.hparams.steps_inner
+                )
+                tracker.store(metrics)
+                self.opt_outer.store_grad()
+            self.opt_outer.step(i)
 
-                self.opt_outer.zero_grad()
-                for task in datasets.MetaBatch(batch, self.device).get_tasks():
-                    metrics = self.loop_inner(task, self.inner.bs, self.inner.steps)
-                    tracker.store(metrics)
-                    self.opt_outer.store_grad()
-                self.opt_outer.step(i)
+            if i % interval == 0:
+                metrics = tracker.get_average()
+                tracker.reset()
+                metrics.update(self.loop_val())
+                print({k: round(v, 3) for k, v in metrics.items()})
 
-                if i % interval == 0:
-                    metrics = tracker.average()
-                    tracker.reset()
-                    metrics.update(self.loop_val())
-                    pbar.set_postfix(metrics)
+    def loop_val(self) -> dict:
+        tracker = MetricsTracker(prefix=Splits.val)
+        net_before = deepcopy(self.net.state_dict())
+        opt_before = deepcopy(self.opt_inner.state_dict())
 
-    def loop_val(self):
-        tracker = utils.MetricsTracker(prefix=datasets.Splits.val)
-        weights_before = copy.deepcopy(self.net.state_dict())
+        def reset_state():
+            self.net.load_state_dict(net_before)
+            self.opt_inner.load_state_dict(opt_before)
 
-        for task in datasets.MetaBatch(self.batch_val, self.device).get_tasks():
-            self.net.load_state_dict(weights_before)
-            metrics = self.loop_inner(task, self.val.bs, self.val.steps)
+        for task in MetaBatch(self.batch_val, self.device).get_tasks():
+            reset_state()
+            metrics = self.loop_inner(
+                task, self.hparams.bs_inner, self.hparams.steps_val
+            )
             tracker.store(metrics)
-        self.net.load_state_dict(weights_before)
-        return tracker.average()
+
+        reset_state()
+        return tracker.get_average()
 
     def run_train(self):
         self.loop_outer()
 
 
-def run_omniglot(root):
-    loaders = {}
-    for s in [datasets.Splits.train, datasets.Splits.val]:
-        params_data = datasets.DataParams(
-            root, data_split=s, bs=5, num_ways=5, num_shots=5, num_shots_test=15
-        )
-        loaders[s] = datasets.OmniglotMetaLoader(params_data)
-
-    params_inner = LoopParams(lr=1e-3, steps=5, bs=10)
-    params_outer = LoopParams(lr=1.0, steps=1000, bs=params_data.bs)
-    params_val = LoopParams(lr=1e-3, steps=50, bs=5)
-    net = models.ConvClassifier(size_in=1, size_out=params_data.num_ways)
-    system = ReptileSystem(loaders, net, params_inner, params_outer, params_val)
+def run_omniglot(root: str):
+    hparams = HyperParams(root=root)
+    loaders = {s: OmniglotMetaLoader(hparams, s) for s in ["train", "val"]}
+    net = ConvClassifier(num_in=1, hp=hparams)
+    system = ReptileSystem(hparams, loaders, net)
     system.run_train()
 
 
-def run_intent(root):
-    loaders = {}
-    for s in [datasets.Splits.train, datasets.Splits.val]:
-        params_data = datasets.DataParams(
-            root, data_split=s, bs=5, num_ways=5, num_shots=5, num_shots_test=15
-        )
-        loaders[s] = datasets.IntentMetaLoader(params_data)
-
-    params_inner = LoopParams(lr=1e-3, steps=50, bs=5)
-    params_outer = LoopParams(lr=1.0, steps=500, bs=params_data.bs)
-    params_val = LoopParams(lr=1e-3, steps=50, bs=5)
-    net = models.LinearClassifier(
-        size_in=loaders[s].embedder.size_embed, size_out=params_data.num_ways
-    )
-    system = ReptileSystem(loaders, net, params_inner, params_outer, params_val)
+def run_intent(root: str):
+    hparams = HyperParams(root=root, steps_outer=500, steps_inner=50, bs_inner=10)
+    loaders = {s: IntentEmbedBertMetaLoader(hparams, s) for s in ["train", "val"]}
+    net = LinearClassifier(num_in=loaders[Splits.train].embed_size, hp=hparams)
+    system = ReptileSystem(hparams, loaders, net)
     system.run_train()
 
+def run_glove_intent(root: str):
+    hparams = HyperParams(root=root, steps_outer=500, steps_inner=50, bs_inner=10)
+    loaders = {s: IntentEmbedGloveMetaLoader(hparams, s) for s in ["train", "val"]}
+    net = LSTMClassifier(num_in=loaders[Splits.train].embed_size, hp=hparams).double()
+    # hs = net.initHidden(hparams.bs_inner)
+    system = ReptileSystem(hparams, loaders, net) #, hidden_state=hs)
+    system.run_train()
 
 def main(root="temp"):
-    run_intent(root)
-
+    run_glove_intent(root)
+    # run_intent(root)
 
 if __name__ == "__main__":
     main()
