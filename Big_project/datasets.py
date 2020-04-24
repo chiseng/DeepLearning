@@ -313,17 +313,17 @@ class IntentEmbedGloveDataset(IntentDataset):
 
         if not self.path.exists():
             download_url(
-                self.url, self.cache_dir, filename="glove.6B.200d.txt.zip" #filename="numberbatch-en-19.08.txt.gz"
+                self.url, self.cache_dir, filename="glove.6B.300d.txt.zip" #filename="numberbatch-en-19.08.txt.gz"
             )
             extract_archive(str(self.path))
 
         # self.path = self.cache_dir / "numberbatch-en-19.08.txt"
-        self.path = self.cache_dir / "glove.6B.200d.txt"
+        self.path = self.cache_dir / "glove.6B.300d.txt"
         f = open(self.path, "r", encoding="utf8")
         metrics = f.readline().strip().split()
         # self.num_words = int(metrics[0])
         # self.vector_length = int(metrics[1])
-        self.vector_length = 200
+        self.vector_length = 300
         self.word_vector = {}
 
         # with tqdm(total=self.num_words) as progress_bar:
