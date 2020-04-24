@@ -298,7 +298,7 @@ class IntentEmbedBertDataset(IntentDataset):
 class IntentEmbedGloveDataset(IntentDataset):
     def __init__(self, root: str, remove_oos_orig=True, cache_dir="embed_cache"):
         super().__init__(root, remove_oos_orig)
-        self.url = "https://github.com/chiseng/DeepLearning/releases/download/1.0/numberbatch-en-19.08.txt.gz"
+        self.url = "http://nlp.stanford.edu/data/glove.6B.zip"
         self.cache_dir = Path(cache_dir)
         self.path = self.cache_dir / Path(self.url).name
         self.punctuation_table = str.maketrans("", "", string.punctuation)
@@ -313,11 +313,12 @@ class IntentEmbedGloveDataset(IntentDataset):
 
         if not self.path.exists():
             download_url(
-                self.url, self.cache_dir, filename="numberbatch-en-19.08.txt.gz"
+                self.url, self.cache_dir, filename="glove.6B.txt" #filename="numberbatch-en-19.08.txt.gz"
             )
             extract_archive(str(self.path))
 
-        self.path = self.cache_dir / "numberbatch-en-19.08.txt"
+        # self.path = self.cache_dir / "numberbatch-en-19.08.txt"
+        self.path = self.cache_dir / "glove.6B.txt"
         f = open(self.path, "r", encoding="utf8")
         metrics = f.readline().strip().split()
         self.num_words = int(metrics[0])
