@@ -296,29 +296,26 @@ class IntentEmbedBertDataset(IntentDataset):
 
 
 class IntentEmbedGloveDataset(IntentDataset):
-    def __init__(
-        self, root: str, remove_oos_orig=True, cache_dir="embed_cache"
-    ):
+    def __init__(self, root: str, remove_oos_orig=True, cache_dir="embed_cache"):
         super().__init__(root, remove_oos_orig)
         self.url = "https://github.com/chiseng/DeepLearning/releases/download/1.0/numberbatch-en-19.08.txt.gz"
         self.cache_dir = Path(cache_dir)
         self.path = self.cache_dir / Path(self.url).name
         self.punctuation_table = str.maketrans("", "", string.punctuation)
-        sentence_length = np.unique(
+        sentence_length = np.sort(
             [len(sentence.strip().split()) for sentence in self.texts]
         )
         self.pad_to = sentence_length[int(0.95 * len(sentence_length))]
         self.embedded = self.preprocessing(self.texts)
 
-
-
     # find word in list of embedded vectors
     def preprocessing(self, texts):
 
         if not self.path.exists():
-            download_url(self.url, self.cache_dir, filename="numberbatch-en-19.08.txt.gz")
+            download_url(
+                self.url, self.cache_dir, filename="numberbatch-en-19.08.txt.gz"
+            )
             extract_archive(str(self.path))
-
 
         self.path = self.cache_dir / "numberbatch-en-19.08.txt"
         f = open(self.path, "r", encoding="utf8")
@@ -327,43 +324,50 @@ class IntentEmbedGloveDataset(IntentDataset):
         self.vector_length = int(metrics[1])
         self.word_vector = {}
 
-        for idx, line in enumerate(f):
-            # if idx == 2000:
-            #     break
-            parsed_line = line.strip().split()
-            self.word_vector[parsed_line[0]] = np.asarray(
-                list(map(np.float, parsed_line[1:])), dtype=np.float64
-            )
+        with tqdm(total=self.num_words) as progress_bar:
+            for idx, line in enumerate(f):
+                # if idx == 2000:
+                #     break
+                parsed_line = line.strip().split()
+                self.word_vector[parsed_line[0]] = np.asarray(
+                    list(map(np.float, parsed_line[1:])), dtype=np.float64
+                )
+                progress_bar.update(1)
         f.close()
 
-        embeds = []
-        self.sentence_vector = np.zeros((self.pad_to, self.vector_length))
+        # self.embedded_sentence =
 
         corpus: List[str] = self.texts
-        sentence_vectors: list = []
-        with tqdm(total=len(corpus)) as progress_bar:
-            for sentence in corpus:
-                sentence_to_words = sentence.strip().split()
-                if len(sentence_to_words) > self.pad_to:
-                    sentence_to_words = sentence_to_words[:self.pad_to]
-                for word in sentence_to_words:
-                    sentence_vectors.append(word.translate(self.punctuation_table))
+        embeds = np.zeros((len(corpus), self.pad_to, self.vector_length))
+        sentence_vectors = np.zeros((self.pad_to, self.vector_length))
+
+        for idx, sentence in enumerate(corpus):
+            sentence_to_words = sentence.strip().split()
+            if len(sentence_to_words) > self.pad_to:
+                sentence_to_words = sentence_to_words[: self.pad_to]
+            for i, word in enumerate(sentence_to_words):
+                word = word.translate(self.punctuation_table)
+                try:
+                    vector = self.word_vector[word]
+                except KeyError:
                     try:
-                        vector = self.word_vector[word]
-                    except KeyError:
-                        try:
-                            if "pm" in word or "am" in word:
-                                word = "time"
-                            elif str.isdigit(word):
-                                word = "number"
-                            else:
-                                vector = self.word_vector[word[:-1]]
-                        except KeyError:
-                            word = "##"
+                        if "pm" in word or "am" in word:
+                            word = "time"
                             vector = self.word_vector[word]
-                embeds.append(self.sentence_vector)
-                progress_bar.update(1)
-        return np.stack(embeds)
+
+                        elif str.isdigit(word):
+                            word = "number"
+                            vector = self.word_vector[word]
+
+                        else:
+                            vector = self.word_vector[word[:-1]]
+                    except KeyError:
+                        word = "unknown"
+                        vector = self.word_vector[word]
+                sentence_vectors[i] = vector
+            embeds[idx] = sentence_vectors
+
+        return embeds
 
     # get the index from the list and get the corresponding vector from the file.
     def __getitem__(self, ind):
@@ -384,7 +388,6 @@ class IntentEmbedGloveMetaLoader(MetaLoader):
         super().__init__(dataset, data_split, hparams)
 
 
-
 def main():
     # OmniglotMetaLoader(HyperParams(), data_split=Splits.train)
     # glove_loader = IntentEmbedGloveDataset(root=HyperParams().root)
@@ -393,12 +396,10 @@ def main():
     # print(bertloader[0])
     # glove_data = IntentEmbedGloveDataset(root=HyperParams().root)
 
-
     # print(Splits.train)
     glove_loader = IntentEmbedGloveMetaLoader(HyperParams(), data_split=Splits.train)
     # loaders = {s: IntentEmbedGloveMetaLoader(HyperParams(), s) for s in ["train", "val"]}
     # print(next(iter(glove_loader)))
-
 
     # self.chunk_dir: Path = Path("vector_chunks")
     # if not self.chunk_dir.exists():

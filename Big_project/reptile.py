@@ -123,6 +123,7 @@ class ReptileSystem:
             preds = logits.sigmoid().round()
         else:
             preds = torch.argmax(logits, dim=-1)
+        # print(preds, targets)
         return (preds == targets).float().mean()
 
     def run_batch(
@@ -130,9 +131,11 @@ class ReptileSystem:
     ) -> Dict[str, float]: # inner batch size 10
         with self.get_gradient_context(is_train)():
             inputs, targets = batch
+            # print(inputs)
             if is_train:
                 self.opt_inner.zero_grad()
             outputs = self.net(inputs) #, self.hidden)
+            # print(outputs, targets)
             loss = self.criterion(outputs, targets)
             acc = self.get_accuracy(outputs, targets)
             if is_train:

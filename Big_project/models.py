@@ -74,13 +74,10 @@ class LSTMClassifier(torch.nn.Module):
         self.inp = num_in
         self.hidden = hp.num_hidden
         self.lstm = torch.nn.LSTM(self.inp, self.hidden, 3, batch_first=True)
-        self.out = torch.nn.Linear(self.hidden, hp.bs_inner)
+        self.out = torch.nn.Linear(self.hidden, hp.num_ways)
 
     def forward(self, x): #, hidden_states):
-        # h0,c0 = hidden_states
-        # output, (hc,hn) = self.lstm(x, (h0,c0))
         output, (hn,cn) = self.lstm(x)
-        # print(output[:,-1:].size())
         output = output[:,-1,:]
         output = self.out(output)
         return output
