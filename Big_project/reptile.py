@@ -136,7 +136,6 @@ class ReptileSystem:
             if is_train:
                 self.opt_inner.zero_grad()
             outputs = self.net(inputs) #, self.hidden)
-            print(outputs)
             loss = self.criterion(outputs, targets)
             acc = self.get_accuracy(outputs, targets)
             if is_train:
@@ -154,7 +153,6 @@ class ReptileSystem:
 
         for batch in generate(loader, limit=steps):
             self.run_batch(batch, is_train=True)
-            break
         return self.run_batch((x_test, y_test), is_train=False)
 
     def loop_outer(self):
@@ -171,8 +169,6 @@ class ReptileSystem:
                 )
                 tracker.store(metrics)
                 self.opt_outer.store_grad()
-                break
-            break
             self.opt_outer.step(i)
 
             if i % interval == 0:
