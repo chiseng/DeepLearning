@@ -313,31 +313,22 @@ class IntentEmbedGloveDataset(IntentDataset):
 
         if not self.path.exists():
             download_url(
-                self.url, self.cache_dir, filename="glove.6B.300d.txt.zip" #filename="numberbatch-en-19.08.txt.gz"
+                self.url, self.cache_dir, filename="glove.6B.300d.txt.zip"
             )
             extract_archive(str(self.path))
 
-        # self.path = self.cache_dir / "numberbatch-en-19.08.txt"
         self.path = self.cache_dir / "glove.6B.300d.txt"
         f = open(self.path, "r", encoding="utf8")
         metrics = f.readline().strip().split()
-        # self.num_words = int(metrics[0])
-        # self.vector_length = int(metrics[1])
         self.vector_length = 300
         self.word_vector = {}
 
-        # with tqdm(total=self.num_words) as progress_bar:
         for idx, line in enumerate(f):
-            # if idx == 2000:
-            #     break
             parsed_line = line.strip().split()
             self.word_vector[parsed_line[0]] = np.asarray(
                 list(map(np.float, parsed_line[1:])), dtype=np.float64
             )
-                # progress_bar.update(1)
         f.close()
-
-        # self.embedded_sentence =
 
         corpus: List[str] = self.texts
         embeds = np.zeros((len(corpus), self.pad_to, self.vector_length))
@@ -391,37 +382,8 @@ class IntentEmbedGloveMetaLoader(MetaLoader):
 
 
 def main():
-    # OmniglotMetaLoader(HyperParams(), data_split=Splits.train)
-    # glove_loader = IntentEmbedGloveDataset(root=HyperParams().root)
-    # bertloader = IntentEmbedBertDataset(root=HyperParams().root)
-    # print(glove_loader[0])
-    # print(bertloader[0])
-    # glove_data = IntentEmbedGloveDataset(root=HyperParams().root)
-
-    # print(Splits.train)
+    #Testing
     glove_loader = IntentEmbedGloveMetaLoader(HyperParams(), data_split=Splits.train)
-    # loaders = {s: IntentEmbedGloveMetaLoader(HyperParams(), s) for s in ["train", "val"]}
-    # print(next(iter(glove_loader)))
-
-    # self.chunk_dir: Path = Path("vector_chunks")
-    # if not self.chunk_dir.exists():
-    #     self.chunk_dir.mkdir()
-    #     files = [
-    #         open(
-    #             os.path.join(str(self.chunk_dir), f"chunk_{i}.txt"),
-    #             "w",
-    #             encoding="utf-8",
-    #         )
-    #         for i in range(1, 15)
-    #     ]
-    #     count = 1
-    #     for idx, line in enumerate(f):
-    #         if (idx % (count * self.num_words / 14)) == 0 and idx != 0:
-    #             count += 1
-    #         files[count - 1].write(line)
-    #     for file in files:
-    #         file.close()
-    # f.close()
 
 
 if __name__ == "__main__":

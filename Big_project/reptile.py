@@ -129,13 +129,12 @@ class ReptileSystem:
 
     def run_batch(
         self, batch: Tuple[torch.Tensor, torch.LongTensor], is_train=True
-    ) -> Dict[str, float]: # inner batch size 10
+    ) -> Dict[str, float]:
         with self.get_gradient_context(is_train)():
             inputs, targets = batch
-            # print(inputs)
             if is_train:
                 self.opt_inner.zero_grad()
-            outputs = self.net(inputs) #, self.hidden)
+            outputs = self.net(inputs)
             loss = self.criterion(outputs, targets)
             acc = self.get_accuracy(outputs, targets)
             if is_train:
@@ -219,8 +218,7 @@ def run_glove_intent(root: str):
     hparams = HyperParams(root=root, steps_outer=500, steps_inner=50, bs_inner=10)
     loaders = {s: IntentEmbedGloveMetaLoader(hparams, s) for s in ["train", "val"]}
     net = LSTMClassifier(num_in=loaders[Splits.train].embed_size, hp=hparams).double()
-    # hs = net.initHidden(hparams.bs_inner)
-    system = ReptileSystem(hparams, loaders, net) #, hidden_state=hs)
+    system = ReptileSystem(hparams, loaders, net)
     system.run_train()
 
 def main(root="temp"):
