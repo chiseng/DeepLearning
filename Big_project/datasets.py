@@ -313,7 +313,7 @@ class IntentEmbedGloveDataset(IntentDataset):
 
         if not self.path.exists():
             download_url(
-                self.url, self.cache_dir, filename="glove.6B.txt" #filename="numberbatch-en-19.08.txt.gz"
+                self.url, self.cache_dir, filename="glove.6B.zip" #filename="numberbatch-en-19.08.txt.gz"
             )
             extract_archive(str(self.path))
 
