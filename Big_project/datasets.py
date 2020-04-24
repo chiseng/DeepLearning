@@ -298,7 +298,7 @@ class IntentEmbedBertDataset(IntentDataset):
 class IntentEmbedGloveDataset(IntentDataset):
     def __init__(self, root: str, remove_oos_orig=True, cache_dir="embed_cache"):
         super().__init__(root, remove_oos_orig)
-        self.url = "https://github.com/chiseng/DeepLearning/releases/download/1.0/glove.6B.200d.txt.zip"
+        self.url = "https://github.com/chiseng/DeepLearning/releases/download/1.0/glove.6B.300d.txt.zip"
         self.cache_dir = Path(cache_dir)
         self.path = self.cache_dir / Path(self.url).name
         self.punctuation_table = str.maketrans("", "", string.punctuation)
