@@ -321,19 +321,20 @@ class IntentEmbedGloveDataset(IntentDataset):
         self.path = self.cache_dir / "glove.6B.200d.txt"
         f = open(self.path, "r", encoding="utf8")
         metrics = f.readline().strip().split()
-        self.num_words = int(metrics[0])
-        self.vector_length = int(metrics[1])
+        # self.num_words = int(metrics[0])
+        # self.vector_length = int(metrics[1])
+        self.vector_length = 200
         self.word_vector = {}
 
-        with tqdm(total=self.num_words) as progress_bar:
-            for idx, line in enumerate(f):
-                # if idx == 2000:
-                #     break
-                parsed_line = line.strip().split()
-                self.word_vector[parsed_line[0]] = np.asarray(
-                    list(map(np.float, parsed_line[1:])), dtype=np.float64
-                )
-                progress_bar.update(1)
+        # with tqdm(total=self.num_words) as progress_bar:
+        for idx, line in enumerate(f):
+            # if idx == 2000:
+            #     break
+            parsed_line = line.strip().split()
+            self.word_vector[parsed_line[0]] = np.asarray(
+                list(map(np.float, parsed_line[1:])), dtype=np.float64
+            )
+                # progress_bar.update(1)
         f.close()
 
         # self.embedded_sentence =
